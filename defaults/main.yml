@@ -2,7 +2,7 @@
 # FreeIPA VIP setup defaults
 
 # Domain for DNS records
-# freeipa_domain: "example.com"
+freeipa_domain: "rinis.cloud"
 
 # Kerberos realm (uppercase domain by default)
 freeipa_realm: "{{ freeipa_domain | upper }}"

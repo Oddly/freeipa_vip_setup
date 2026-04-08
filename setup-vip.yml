@@ -7,8 +7,8 @@
 # Must run on a FreeIPA server as root.
 #
 # Usage:
-#   ansible-playbook -i ipa-server.example.com, setup-vip.yml -e @vars/myenv.yml
-#   ansible-playbook -i ipa-server.example.com, setup-vip.yml -e @vars/myenv.yml -e freeipa_vip_state=absent
+#   ansible-playbook -i adm-aaa-001.rinis.cloud, setup-vip.yml -e @vars/acc.yml
+#   ansible-playbook -i adm-aaa-001.rinis.cloud, setup-vip.yml -e @vars/acc.yml -e freeipa_vip_state=absent
 
 - name: FreeIPA VIP setup
   hosts: all

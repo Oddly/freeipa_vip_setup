@@ -42,7 +42,8 @@
       ipa dnsrecord-del {{ freeipa_domain }} {{ item.item | regex_replace('\.' + freeipa_domain + '$', '') }}
       --a-rec={{ _stale_ip }}
   vars:
-    _current_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _raw_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _current_ips: "{{ _raw_ips | map('split', ', ') | flatten | map('trim') | select | list }}"
     _stale_ip: "{{ _current_ips | reject('eq', vip_record.ip) | first }}"
   loop: "{{ dns_current.results }}"
   loop_control:
@@ -65,7 +66,8 @@
          | default(_stale_ip.split('.')[1] + '.' + _stale_ip.split('.')[0] + '.in-addr.arpa') }}
       {{ _stale_ip.split('.')[3] + '.' + _stale_ip.split('.')[2] }}
   vars:
-    _current_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _raw_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _current_ips: "{{ _raw_ips | map('split', ', ') | flatten | map('trim') | select | list }}"
     _stale_ip: "{{ _current_ips | reject('eq', vip_record.ip) | first }}"
   loop: "{{ dns_current.results }}"
   loop_control:
@@ -86,10 +88,12 @@
       {{ _stale_ip.split('.')[3] + '.' + _stale_ip.split('.')[2] }}
       --ptr-rec={{ _old_ptr }}
   vars:
-    _current_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _raw_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _current_ips: "{{ _raw_ips | map('split', ', ') | flatten | map('trim') | select | list }}"
     _stale_ip: "{{ _current_ips | reject('eq', vip_record.ip) | first }}"
     _ptr_result: "{{ old_ip_ptr_check.results[ansible_loop.index0] }}"
-    _old_ptrs: "{{ _ptr_result.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _old_ptrs_raw: "{{ _ptr_result.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _old_ptrs: "{{ _old_ptrs_raw | map('split', ', ') | flatten | map('trim') | select | list }}"
     _old_ptr: "{{ _old_ptrs | first }}"
   loop: "{{ dns_current.results }}"
   loop_control:
@@ -139,7 +143,8 @@
       ipa dnsrecord-del {{ _reverse_zone }} {{ _reverse_record }}
       --ptr-rec={{ _stale_ptr }}
   vars:
-    _current_ptrs: "{{ ptr_current.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _raw_ptrs: "{{ ptr_current.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _current_ptrs: "{{ _raw_ptrs | map('split', ', ') | flatten | map('trim') | select | list }}"
     _desired_ptr: "{{ (vip_record.reverse_dns_name | default('')) + '.' }}"
     _stale_ptr: "{{ _current_ptrs | reject('eq', _desired_ptr) | first }}"
   when:
@@ -158,7 +163,8 @@
       ipa dnsrecord-del {{ _reverse_zone }} {{ _reverse_record }}
       --ptr-rec={{ _existing_ptr }}
   vars:
-    _current_ptrs: "{{ ptr_current.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _raw_ptrs: "{{ ptr_current.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _current_ptrs: "{{ _raw_ptrs | map('split', ', ') | flatten | map('trim') | select | list }}"
     _existing_ptr: "{{ _current_ptrs | first }}"
   when:
     - not (vip_record.include_ip_in_cert | default(false))
