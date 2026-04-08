@@ -1,0 +1,17 @@
+---
+# FreeIPA VIP setup playbook
+#
+# Creates all FreeIPA objects required for ipa_certmonger VIP support:
+# DNS records, dummy hosts, service principals, and permissions.
+#
+# Must run on a FreeIPA server as root.
+#
+# Usage:
+#   ansible-playbook -i ipa-server.example.com, setup-vip.yml -e @vars/myenv.yml
+#   ansible-playbook -i ipa-server.example.com, setup-vip.yml -e @vars/myenv.yml -e freeipa_vip_state=absent
+
+- name: FreeIPA VIP setup
+  hosts: all
+  become: true
+  roles:
+    - role: "{{ playbook_dir }}"

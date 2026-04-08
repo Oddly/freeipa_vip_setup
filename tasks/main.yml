@@ -1,0 +1,179 @@
+---
+# FreeIPA VIP setup
+#
+# Creates or removes DNS records, dummy hosts, service principals, and permissions
+# required for ipa_certmonger VIP support.
+#
+# Must run on a FreeIPA server as root.
+# Requires freeipa_vip_records to be defined.
+# Set freeipa_vip_state to 'absent' to remove all objects.
+
+# ---------------------------------------------------------------------------
+# Dry-run summary
+# ---------------------------------------------------------------------------
+
+- name: "Preview: objects that will be {{ freeipa_vip_state }}"
+  ansible.builtin.debug:
+    msg: "{{ _summary.split('\n') | reject('eq', '') | list }}"
+  vars:
+    _all_dns_names: "{{ freeipa_vip_records | map(attribute='dns_names') | flatten }}"
+    _summary: |
+      State: {{ freeipa_vip_state }}
+      {% for rec in freeipa_vip_records %}
+      {% for name in rec.dns_names %}
+      DNS A-record: {{ name }} -> {{ rec.ip }}
+      {% endfor %}
+      {% if rec.include_ip_in_cert | default(false) %}
+      DNS PTR-record: {{ rec.ip }} -> {{ rec.reverse_dns_name }}
+      {% endif %}
+      {% endfor %}
+      {% for name in _all_dns_names %}
+      Host: {{ name }}
+      Service: {{ freeipa_service_type }}/{{ name }}
+      Permission: Manage {{ name }} managedBy
+      {% endfor %}
+      Privilege: {{ freeipa_vip_privilege }}
+      Role: {{ freeipa_certadmin_role }} (user: {{ freeipa_certadmin_user }})
+  when: ansible_check_mode
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+- name: Validate that freeipa_domain is defined
+  ansible.builtin.assert:
+    that:
+      - freeipa_domain is defined
+      - freeipa_domain | length > 0
+    fail_msg: >-
+      freeipa_domain is not defined. Set it to your FreeIPA domain (e.g. example.com).
+
+- name: Validate that freeipa_vip_records is defined
+  ansible.builtin.assert:
+    that:
+      - freeipa_vip_records is defined
+      - freeipa_vip_records | length > 0
+    fail_msg: >-
+      freeipa_vip_records is not defined or empty.
+      Define it in group_vars with at least one VIP entry.
+
+- name: Validate state
+  ansible.builtin.assert:
+    that:
+      - freeipa_vip_state in ['present', 'absent']
+    fail_msg: >-
+      freeipa_vip_state must be 'present' or 'absent', got '{{ freeipa_vip_state }}'.
+
+# ---------------------------------------------------------------------------
+# Present: create everything
+# ---------------------------------------------------------------------------
+
+- name: Process VIP records (present)
+  ansible.builtin.include_tasks: vip_record.yml
+  loop: "{{ freeipa_vip_records }}"
+  loop_control:
+    loop_var: vip_record
+    label: "{{ vip_record.ip }}"
+  when: freeipa_vip_state == 'present'
+
+- name: Create IPA privilege for VIP managedBy
+  ansible.builtin.command:
+    cmd: >-
+      ipa privilege-add "{{ freeipa_vip_privilege }}"
+      --desc="Manage managedBy attribute for VIP services"
+  register: privilege_result
+  changed_when: "'Added privilege' in privilege_result.stdout"
+  failed_when:
+    - privilege_result.rc != 0
+    - "'already exists' not in privilege_result.stderr"
+    - "'no modifications' not in privilege_result.stderr"
+  when: freeipa_vip_state == 'present'
+
+- name: Attach permissions to privilege
+  ansible.builtin.command:
+    cmd: >-
+      ipa privilege-add-permission "{{ freeipa_vip_privilege }}"
+      --permissions="Manage {{ item }} managedBy"
+  loop: >-
+    {{ freeipa_vip_records
+       | map(attribute='dns_names')
+       | flatten }}
+  register: perm_attach_result
+  changed_when: "'Number of permissions added 0' not in perm_attach_result.stdout"
+  failed_when:
+    - perm_attach_result.rc != 0
+    - "'already a member' not in perm_attach_result.stdout"
+  when: freeipa_vip_state == 'present'
+
+- name: Check if IPA role exists
+  ansible.builtin.command:
+    cmd: ipa role-show "{{ freeipa_certadmin_role }}"
+  register: role_exists
+  changed_when: false
+  failed_when: false
+  when: freeipa_vip_state == 'present'
+
+- name: Create IPA role for certadmin
+  ansible.builtin.command:
+    cmd: >-
+      ipa role-add "{{ freeipa_certadmin_role }}"
+      --desc="Manage TLS certificates via certmonger"
+  when:
+    - freeipa_vip_state == 'present'
+    - role_exists.rc != 0
+  register: role_create_result
+  changed_when: "'Added role' in role_create_result.stdout"
+
+- name: Attach privilege to role
+  ansible.builtin.command:
+    cmd: >-
+      ipa role-add-privilege "{{ freeipa_certadmin_role }}"
+      --privileges="{{ freeipa_vip_privilege }}"
+  register: role_priv_result
+  changed_when: "'Number of privileges added 0' not in role_priv_result.stdout"
+  failed_when:
+    - role_priv_result.rc != 0
+    - "'already a member' not in role_priv_result.stdout"
+  when: freeipa_vip_state == 'present'
+
+- name: Add certadmin user to role
+  ansible.builtin.command:
+    cmd: >-
+      ipa role-add-member "{{ freeipa_certadmin_role }}"
+      --users="{{ freeipa_certadmin_user }}"
+  register: role_member_result
+  changed_when: "'Number of members added 0' not in role_member_result.stdout"
+  failed_when:
+    - role_member_result.rc != 0
+    - "'already a member' not in role_member_result.stdout"
+  when: freeipa_vip_state == 'present'
+
+# ---------------------------------------------------------------------------
+# Absent: remove per-VIP objects (reverse order)
+# Privilege and role are NOT removed — they may be shared across environments.
+# ---------------------------------------------------------------------------
+
+- name: Remove permissions from privilege
+  ansible.builtin.command:
+    cmd: >-
+      ipa privilege-remove-permission "{{ freeipa_vip_privilege }}"
+      --permissions="Manage {{ item }} managedBy"
+  loop: >-
+    {{ freeipa_vip_records
+       | map(attribute='dns_names')
+       | flatten }}
+  register: perm_detach_result
+  changed_when: "'Number of permissions removed' in perm_detach_result.stdout"
+  failed_when:
+    - perm_detach_result.rc != 0
+    - "'not a member' not in perm_detach_result.stderr"
+    - "'not found' not in perm_detach_result.stderr"
+  when: freeipa_vip_state == 'absent'
+
+- name: Process VIP records (absent)
+  ansible.builtin.include_tasks: vip_record_absent.yml
+  loop: "{{ freeipa_vip_records }}"
+  loop_control:
+    loop_var: vip_record
+    label: "{{ vip_record.ip }}"
+  when: freeipa_vip_state == 'absent'

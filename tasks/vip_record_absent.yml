@@ -1,0 +1,104 @@
+---
+# Remove a single VIP record: permissions, services, hosts, DNS
+# Reverse order of vip_record.yml
+#
+# Called from main.yml with loop_var: vip_record
+
+# ---------------------------------------------------------------------------
+# Derive reverse zone from IP (same logic as vip_record.yml)
+# ---------------------------------------------------------------------------
+
+- name: "Set reverse zone for {{ vip_record.ip }}"
+  ansible.builtin.set_fact:
+    _reverse_zone: >-
+      {{ vip_record.reverse_zone
+         | default(vip_record.ip.split('.')[1] + '.' + vip_record.ip.split('.')[0] + '.in-addr.arpa') }}
+    _reverse_record: >-
+      {{ vip_record.ip.split('.')[3] + '.' + vip_record.ip.split('.')[2] }}
+
+# ---------------------------------------------------------------------------
+# Remove permissions
+# ---------------------------------------------------------------------------
+
+- name: "Remove managedBy permissions for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: ipa permission-del "Manage {{ item }} managedBy"
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: perm_del_result
+  changed_when: "'Deleted permission' in perm_del_result.stdout"
+  failed_when:
+    - perm_del_result.rc != 0
+    - "'not found' not in perm_del_result.stderr"
+
+# ---------------------------------------------------------------------------
+# Remove service principals
+# ---------------------------------------------------------------------------
+
+- name: "Remove service principals for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: ipa service-del {{ freeipa_service_type }}/{{ item }}
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: service_del_result
+  changed_when: "'Deleted service' in service_del_result.stdout"
+  failed_when:
+    - service_del_result.rc != 0
+    - "'not found' not in service_del_result.stderr"
+
+# ---------------------------------------------------------------------------
+# Remove dummy hosts
+# ---------------------------------------------------------------------------
+
+- name: "Remove dummy hosts for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: ipa host-del {{ item }}
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: host_del_result
+  changed_when: "'Deleted host' in host_del_result.stdout"
+  failed_when:
+    - host_del_result.rc != 0
+    - "'not found' not in host_del_result.stderr"
+
+# ---------------------------------------------------------------------------
+# Remove DNS PTR-record
+# ---------------------------------------------------------------------------
+
+- name: "Remove DNS PTR-record for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-del {{ _reverse_zone }}
+      {{ _reverse_record }}
+      --ptr-rec={{ vip_record.reverse_dns_name }}.
+  when:
+    - vip_record.include_ip_in_cert | default(false)
+    - vip_record.reverse_dns_name is defined
+  register: dns_ptr_del_result
+  changed_when: "'Deleted record' in dns_ptr_del_result.stdout"
+  failed_when:
+    - dns_ptr_del_result.rc != 0
+    - "'not found' not in dns_ptr_del_result.stderr"
+    - "'does not contain' not in dns_ptr_del_result.stderr"
+
+# ---------------------------------------------------------------------------
+# Remove DNS A-records
+# ---------------------------------------------------------------------------
+
+- name: "Remove DNS A-records for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-del {{ freeipa_domain }} {{ item | regex_replace('\.' + freeipa_domain + '$', '') }}
+      --a-rec={{ vip_record.ip }}
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: dns_a_del_result
+  changed_when: "'Deleted record' in dns_a_del_result.stdout"
+  failed_when:
+    - dns_a_del_result.rc != 0
+    - "'not found' not in dns_a_del_result.stderr"
+    - "'does not contain' not in dns_a_del_result.stderr"

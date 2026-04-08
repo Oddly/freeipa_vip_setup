@@ -1,0 +1,37 @@
+---
+# FreeIPA VIP setup defaults
+
+# Domain for DNS records
+# freeipa_domain: "example.com"
+
+# Kerberos realm (uppercase domain by default)
+freeipa_realm: "{{ freeipa_domain | upper }}"
+
+# Principal that manages certificates (gets managedBy permissions)
+freeipa_certadmin_user: "certadmin"
+
+# IPA role name for the certadmin principal
+freeipa_certadmin_role: "Certificate Manager"
+
+# IPA privilege name for VIP managedBy permissions
+freeipa_vip_privilege: "Service Host Management"
+
+# State: present (create) or absent (remove)
+freeipa_vip_state: "present"
+
+# Service principal type
+freeipa_service_type: "HTTP"
+
+# Reverse DNS zone format: /16 by default
+# Override per vip_record entry with reverse_zone if your network uses /24
+# Default: derived from IP (e.g. 10.128.x.y -> 128.10.in-addr.arpa)
+# freeipa_reverse_zone: "128.10.in-addr.arpa"
+
+# VIP records - must be provided by the playbook
+# freeipa_vip_records:
+#   - dns_names:
+#       - haproxy-vip.example.com
+#     ip: "10.0.0.100"
+#     include_ip_in_cert: true
+#     reverse_dns_name: haproxy-vip.example.com
+#     reverse_zone: "0.10.in-addr.arpa"  # optional, overrides /16 default

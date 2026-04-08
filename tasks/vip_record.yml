@@ -1,0 +1,193 @@
+---
+# Process a single VIP record: DNS, hosts, services, permissions
+#
+# Called from main.yml with loop_var: vip_record
+#
+# Handles edge cases:
+# - IP change: removes old A-record, adds new one
+# - Multiple A-records: cleans up extras, keeps only desired IP
+# - PTR change: removes old PTR, adds new one
+# - include_ip_in_cert toggled off: removes PTR
+
+# ---------------------------------------------------------------------------
+# Derive reverse zone from IP (default /16)
+# Can be overridden per record with vip_record.reverse_zone
+# ---------------------------------------------------------------------------
+
+- name: "Set reverse zone for {{ vip_record.ip }}"
+  ansible.builtin.set_fact:
+    _reverse_zone: >-
+      {{ vip_record.reverse_zone
+         | default(vip_record.ip.split('.')[1] + '.' + vip_record.ip.split('.')[0] + '.in-addr.arpa') }}
+    _reverse_record: >-
+      {{ vip_record.ip.split('.')[3] + '.' + vip_record.ip.split('.')[2] }}
+
+# ---------------------------------------------------------------------------
+# DNS A-records: ensure correct IP, remove stale records
+# ---------------------------------------------------------------------------
+
+- name: "Check current DNS A-records for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: "ipa dnsrecord-show {{ freeipa_domain }} {{ item | regex_replace('\\.' + freeipa_domain + '$', '') }}"
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: dns_current
+  changed_when: false
+  failed_when: false
+
+- name: "Remove stale A-records for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-del {{ freeipa_domain }} {{ item.item | regex_replace('\.' + freeipa_domain + '$', '') }}
+      --a-rec={{ _stale_ip }}
+  vars:
+    _current_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _stale_ip: "{{ _current_ips | reject('eq', vip_record.ip) | first }}"
+  loop: "{{ dns_current.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.rc == 0
+    - (_current_ips | reject('eq', vip_record.ip) | list | length) > 0
+  register: dns_del_stale
+  changed_when: "'Deleted record' in dns_del_stale.stdout | default('')"
+  failed_when:
+    - dns_del_stale.rc | default(0) != 0
+    - "'not found' not in dns_del_stale.stderr | default('')"
+    - "'does not contain' not in dns_del_stale.stderr | default('')"
+
+- name: "Create DNS A-records for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-add {{ freeipa_domain }} {{ item | regex_replace('\.' + freeipa_domain + '$', '') }}
+      --a-rec={{ vip_record.ip }}
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: dns_a_result
+  changed_when: "'Record name' in dns_a_result.stdout"
+  failed_when:
+    - dns_a_result.rc != 0
+    - "'already exists' not in dns_a_result.stderr"
+    - "'no modifications' not in dns_a_result.stderr"
+
+# ---------------------------------------------------------------------------
+# DNS PTR-record: ensure correct, remove stale, handle toggle
+# ---------------------------------------------------------------------------
+
+- name: "Check current PTR-record for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: "ipa dnsrecord-show {{ _reverse_zone }} {{ _reverse_record }}"
+  register: ptr_current
+  changed_when: false
+  failed_when: false
+
+- name: "Remove stale PTR-record for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-del {{ _reverse_zone }} {{ _reverse_record }}
+      --ptr-rec={{ _stale_ptr }}
+  vars:
+    _current_ptrs: "{{ ptr_current.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _desired_ptr: "{{ (vip_record.reverse_dns_name | default('')) + '.' }}"
+    _stale_ptr: "{{ _current_ptrs | reject('eq', _desired_ptr) | first }}"
+  when:
+    - ptr_current.rc == 0
+    - (_current_ptrs | reject('eq', _desired_ptr) | list | length) > 0
+  register: ptr_del_stale
+  changed_when: "'Deleted record' in ptr_del_stale.stdout | default('')"
+  failed_when:
+    - ptr_del_stale.rc | default(0) != 0
+    - "'not found' not in ptr_del_stale.stderr | default('')"
+    - "'does not contain' not in ptr_del_stale.stderr | default('')"
+
+- name: "Remove PTR-record when include_ip_in_cert is disabled for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-del {{ _reverse_zone }} {{ _reverse_record }}
+      --ptr-rec={{ _existing_ptr }}
+  vars:
+    _current_ptrs: "{{ ptr_current.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _existing_ptr: "{{ _current_ptrs | first }}"
+  when:
+    - not (vip_record.include_ip_in_cert | default(false))
+    - ptr_current.rc == 0
+    - (_current_ptrs | length) > 0
+  register: ptr_del_toggle
+  changed_when: "'Deleted record' in ptr_del_toggle.stdout | default('')"
+  failed_when:
+    - ptr_del_toggle.rc | default(0) != 0
+    - "'not found' not in ptr_del_toggle.stderr | default('')"
+    - "'does not contain' not in ptr_del_toggle.stderr | default('')"
+
+- name: "Create DNS PTR-record for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-add {{ _reverse_zone }}
+      {{ _reverse_record }}
+      --ptr-rec={{ vip_record.reverse_dns_name }}.
+  when:
+    - vip_record.include_ip_in_cert | default(false)
+    - vip_record.reverse_dns_name is defined
+  register: dns_ptr_result
+  changed_when: "'Record name' in dns_ptr_result.stdout"
+  failed_when:
+    - dns_ptr_result.rc != 0
+    - "'already exists' not in dns_ptr_result.stderr"
+    - "'no modifications' not in dns_ptr_result.stderr"
+
+# ---------------------------------------------------------------------------
+# Dummy hosts (one per dns_name)
+# ---------------------------------------------------------------------------
+
+- name: "Create dummy hosts for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: ipa host-add {{ item }} --force
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: host_result
+  changed_when: "'Added host' in host_result.stdout"
+  failed_when:
+    - host_result.rc != 0
+    - "'already exists' not in host_result.stderr"
+    - "'no modifications' not in host_result.stderr"
+
+# ---------------------------------------------------------------------------
+# Service principals (one per dns_name)
+# ---------------------------------------------------------------------------
+
+- name: "Create service principals for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: ipa service-add {{ freeipa_service_type }}/{{ item }} --force
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: service_result
+  changed_when: "'Added service' in service_result.stdout"
+  failed_when:
+    - service_result.rc != 0
+    - "'already exists' not in service_result.stderr"
+    - "'no modifications' not in service_result.stderr"
+
+# ---------------------------------------------------------------------------
+# Permissions for certadmin managedBy (one per dns_name)
+# ---------------------------------------------------------------------------
+
+- name: "Create managedBy permissions for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa permission-add "Manage {{ item }} managedBy"
+      --right=write
+      --attrs=managedby
+      --subtree="krbprincipalname={{ freeipa_service_type }}/{{ item }}@{{ freeipa_realm }},cn=services,cn=accounts,{{ freeipa_domain.split('.') | map('regex_replace', '^', 'dc=') | join(',') }}"
+  loop: "{{ vip_record.dns_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: perm_result
+  changed_when: "'Added permission' in perm_result.stdout"
+  failed_when:
+    - perm_result.rc != 0
+    - "'already exists' not in perm_result.stderr"
+    - "'no modifications' not in perm_result.stderr"
