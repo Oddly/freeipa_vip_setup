@@ -57,6 +57,56 @@
     - "'not found' not in dns_del_stale.stderr | default('')"
     - "'does not contain' not in dns_del_stale.stderr | default('')"
 
+- name: "Check PTR at old IP for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-show
+      {{ vip_record.reverse_zone
+         | default(_stale_ip.split('.')[1] + '.' + _stale_ip.split('.')[0] + '.in-addr.arpa') }}
+      {{ _stale_ip.split('.')[3] + '.' + _stale_ip.split('.')[2] }}
+  vars:
+    _current_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _stale_ip: "{{ _current_ips | reject('eq', vip_record.ip) | first }}"
+  loop: "{{ dns_current.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.rc == 0
+    - (_current_ips | reject('eq', vip_record.ip) | list | length) > 0
+  register: old_ip_ptr_check
+  changed_when: false
+  failed_when: false
+
+- name: "Remove PTR at old IP for {{ vip_record.ip }}"
+  ansible.builtin.command:
+    cmd: >-
+      ipa dnsrecord-del
+      {{ vip_record.reverse_zone
+         | default(_stale_ip.split('.')[1] + '.' + _stale_ip.split('.')[0] + '.in-addr.arpa') }}
+      {{ _stale_ip.split('.')[3] + '.' + _stale_ip.split('.')[2] }}
+      --ptr-rec={{ _old_ptr }}
+  vars:
+    _current_ips: "{{ item.stdout | default('') | regex_findall('A record: (.+)') }}"
+    _stale_ip: "{{ _current_ips | reject('eq', vip_record.ip) | first }}"
+    _ptr_result: "{{ old_ip_ptr_check.results[ansible_loop.index0] }}"
+    _old_ptrs: "{{ _ptr_result.stdout | default('') | regex_findall('PTR record: (.+)') }}"
+    _old_ptr: "{{ _old_ptrs | first }}"
+  loop: "{{ dns_current.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+    extended: true
+  when:
+    - item.rc == 0
+    - (_current_ips | reject('eq', vip_record.ip) | list | length) > 0
+    - _ptr_result.rc | default(1) == 0
+    - (_old_ptrs | length) > 0
+  register: ptr_del_old_ip
+  changed_when: "'Deleted record' in ptr_del_old_ip.stdout | default('')"
+  failed_when:
+    - ptr_del_old_ip.rc | default(0) != 0
+    - "'not found' not in ptr_del_old_ip.stderr | default('')"
+    - "'does not contain' not in ptr_del_old_ip.stderr | default('')"
+
 - name: "Create DNS A-records for {{ vip_record.ip }}"
   ansible.builtin.command:
     cmd: >-

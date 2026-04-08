@@ -1,0 +1,8 @@
+---
+freeipa_domain: "example.com"
+freeipa_vip_state: "present"
+freeipa_service_type: "ldap"
+freeipa_vip_records:
+  - dns_names:
+      - ldap-vip.example.com
+    ip: "10.128.1.100"

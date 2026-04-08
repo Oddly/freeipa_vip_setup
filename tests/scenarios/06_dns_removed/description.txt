@@ -1,0 +1,1 @@
+DNS name removed — orphaned objects stay (no cleanup)

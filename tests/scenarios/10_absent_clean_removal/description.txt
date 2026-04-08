@@ -1,0 +1,1 @@
+Absent state — removes all VIP objects cleanly

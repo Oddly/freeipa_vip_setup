@@ -1,0 +1,8 @@
+---
+- name: Test freeipa_vip_setup
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  roles:
+    - role: freeipa_vip_setup

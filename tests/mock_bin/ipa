@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# Stateful mock of the FreeIPA `ipa` CLI for testing freeipa_vip_setup
+#
+# Maintains state in $IPA_STATE_DIR (flat files):
+#   dns_a/<zone>/<name>       - one IP per line
+#   dns_ptr/<zone>/<record>   - one FQDN per line
+#   hosts/<fqdn>              - empty marker
+#   services/<principal>      - empty marker
+#   permissions/<name>        - empty marker
+#   privileges/<name>         - empty marker
+#   privilege_perms/<priv>/<perm>  - empty marker
+#   roles/<name>              - empty marker
+#   role_privs/<role>/<priv>  - empty marker
+#   role_members/<role>/<user> - empty marker
+
+set -euo pipefail
+
+STATE="${IPA_STATE_DIR:?IPA_STATE_DIR must be set}"
+LOG="${STATE}/_command_log"
+
+# Log every invocation for assertion checking
+echo "$0 $*" >> "$LOG"
+
+cmd="$1"; shift
+
+case "$cmd" in
+  # -------------------------------------------------------------------------
+  # DNS A-record operations
+  # -------------------------------------------------------------------------
+  dnsrecord-show)
+    zone="$1"; name="$2"
+    found=0
+    # Check A-records
+    file="${STATE}/dns_a/${zone}/${name}"
+    if [[ -f "$file" ]]; then
+      echo "  Record name: ${name}"
+      while IFS= read -r ip; do
+        echo "  A record: ${ip}"
+      done < "$file"
+      found=1
+    fi
+    # Check PTR-records
+    ptr_file="${STATE}/dns_ptr/${zone}/${name}"
+    if [[ -f "$ptr_file" ]]; then
+      [[ "$found" -eq 0 ]] && echo "  Record name: ${name}"
+      while IFS= read -r ptr; do
+        echo "  PTR record: ${ptr}"
+      done < "$ptr_file"
+      found=1
+    fi
+    if [[ "$found" -eq 1 ]]; then
+      exit 0
+    else
+      echo "ipa: ERROR: ${name}: DNS resource record not found" >&2
+      exit 2
+    fi
+    ;;
+
+  dnsrecord-add)
+    zone="$1"; name="$2"; shift 2
+    a_rec="" ptr_rec=""
+    for arg in "$@"; do
+      case "$arg" in
+        --a-rec=*)   a_rec="${arg#--a-rec=}" ;;
+        --ptr-rec=*) ptr_rec="${arg#--ptr-rec=}" ;;
+      esac
+    done
+
+    if [[ -n "$a_rec" ]]; then
+      dir="${STATE}/dns_a/${zone}"
+      mkdir -p "$dir"
+      file="${dir}/${name}"
+      if [[ -f "$file" ]] && grep -qxF "$a_rec" "$file" 2>/dev/null; then
+        echo "ipa: ERROR: no modifications to be performed (A record ${a_rec} already exists)" >&2
+        exit 1
+      fi
+      echo "$a_rec" >> "$file"
+      echo "  Record name: ${name}"
+      echo "  A record: ${a_rec}"
+      exit 0
+    fi
+
+    if [[ -n "$ptr_rec" ]]; then
+      dir="${STATE}/dns_ptr/${zone}"
+      mkdir -p "$dir"
+      file="${dir}/${name}"
+      if [[ -f "$file" ]] && grep -qxF "$ptr_rec" "$file" 2>/dev/null; then
+        echo "ipa: ERROR: no modifications to be performed (PTR record ${ptr_rec} already exists)" >&2
+        exit 1
+      fi
+      echo "$ptr_rec" >> "$file"
+      echo "  Record name: ${name}"
+      echo "  PTR record: ${ptr_rec}"
+      exit 0
+    fi
+
+    echo "ipa: ERROR: unknown record type" >&2
+    exit 1
+    ;;
+
+  dnsrecord-del)
+    zone="$1"; name="$2"; shift 2
+    a_rec="" ptr_rec=""
+    for arg in "$@"; do
+      case "$arg" in
+        --a-rec=*)   a_rec="${arg#--a-rec=}" ;;
+        --ptr-rec=*) ptr_rec="${arg#--ptr-rec=}" ;;
+      esac
+    done
+
+    if [[ -n "$a_rec" ]]; then
+      file="${STATE}/dns_a/${zone}/${name}"
+      if [[ -f "$file" ]] && grep -qxF "$a_rec" "$file" 2>/dev/null; then
+        grep -vxF "$a_rec" "$file" > "${file}.tmp" || true
+        mv "${file}.tmp" "$file"
+        # Remove empty file
+        [[ -s "$file" ]] || rm -f "$file"
+        echo "  Deleted record \"${name}\""
+        exit 0
+      fi
+      echo "ipa: ERROR: ${name}: DNS resource record not found or does not contain '${a_rec}'" >&2
+      exit 2
+    fi
+
+    if [[ -n "$ptr_rec" ]]; then
+      file="${STATE}/dns_ptr/${zone}/${name}"
+      if [[ -f "$file" ]] && grep -qxF "$ptr_rec" "$file" 2>/dev/null; then
+        grep -vxF "$ptr_rec" "$file" > "${file}.tmp" || true
+        mv "${file}.tmp" "$file"
+        [[ -s "$file" ]] || rm -f "$file"
+        echo "  Deleted record \"${name}\""
+        exit 0
+      fi
+      echo "ipa: ERROR: ${name}: DNS resource record not found or does not contain '${ptr_rec}'" >&2
+      exit 2
+    fi
+
+    echo "ipa: ERROR: unknown record type" >&2
+    exit 1
+    ;;
+
+  dnsrecord-mod)
+    # Used for stale record cleanup - redirect to del
+    zone="$1"; name="$2"; shift 2
+    a_rec=""
+    for arg in "$@"; do
+      case "$arg" in
+        --a-rec=*) a_rec="${arg#--a-rec=}" ;;
+      esac
+    done
+    if [[ -n "$a_rec" ]]; then
+      file="${STATE}/dns_a/${zone}/${name}"
+      if [[ -f "$file" ]] && grep -qxF "$a_rec" "$file" 2>/dev/null; then
+        grep -vxF "$a_rec" "$file" > "${file}.tmp" || true
+        mv "${file}.tmp" "$file"
+        [[ -s "$file" ]] || rm -f "$file"
+        echo "  Deleted record \"${name}\""
+        exit 0
+      fi
+    fi
+    echo "  Record name: ${name}"
+    exit 0
+    ;;
+
+  dnsrecord-find)
+    zone="$1"; name="${2:-}"
+    if [[ -n "$name" ]]; then
+      file="${STATE}/dns_a/${zone}/${name}"
+      if [[ -f "$file" ]]; then
+        echo "  Record name: ${name}"
+        while IFS= read -r ip; do
+          echo "  A record: ${ip}"
+        done < "$file"
+        exit 0
+      fi
+      # Check PTR
+      file="${STATE}/dns_ptr/${zone}/${name}"
+      if [[ -f "$file" ]]; then
+        echo "  Record name: ${name}"
+        while IFS= read -r ptr; do
+          echo "  PTR record: ${ptr}"
+        done < "$file"
+        exit 0
+      fi
+      echo "ipa: ERROR: ${name}: DNS resource record not found" >&2
+      exit 2
+    fi
+    exit 0
+    ;;
+
+  # -------------------------------------------------------------------------
+  # Host operations
+  # -------------------------------------------------------------------------
+  host-add)
+    fqdn="$1"
+    dir="${STATE}/hosts"
+    mkdir -p "$dir"
+    if [[ -f "${dir}/${fqdn}" ]]; then
+      echo "ipa: ERROR: host '${fqdn}' already exists" >&2
+      exit 1
+    fi
+    touch "${dir}/${fqdn}"
+    echo "  Added host \"${fqdn}\""
+    exit 0
+    ;;
+
+  host-del)
+    fqdn="$1"
+    file="${STATE}/hosts/${fqdn}"
+    if [[ -f "$file" ]]; then
+      rm -f "$file"
+      echo "  Deleted host \"${fqdn}\""
+      exit 0
+    fi
+    echo "ipa: ERROR: ${fqdn}: host not found" >&2
+    exit 2
+    ;;
+
+  # -------------------------------------------------------------------------
+  # Service operations
+  # -------------------------------------------------------------------------
+  service-add)
+    principal="$1"
+    dir="${STATE}/services"
+    mkdir -p "$dir"
+    # Sanitize principal for filesystem
+    safe="${principal//\//_}"
+    if [[ -f "${dir}/${safe}" ]]; then
+      echo "ipa: ERROR: service '${principal}' already exists" >&2
+      exit 1
+    fi
+    touch "${dir}/${safe}"
+    echo "  Added service \"${principal}\""
+    exit 0
+    ;;
+
+  service-del)
+    principal="$1"
+    dir="${STATE}/services"
+    safe="${principal//\//_}"
+    if [[ -f "${dir}/${safe}" ]]; then
+      rm -f "${dir}/${safe}"
+      echo "  Deleted service \"${principal}\""
+      exit 0
+    fi
+    echo "ipa: ERROR: ${principal}: service not found" >&2
+    exit 2
+    ;;
+
+  # -------------------------------------------------------------------------
+  # Permission operations
+  # -------------------------------------------------------------------------
+  permission-add)
+    name="$1"
+    dir="${STATE}/permissions"
+    mkdir -p "$dir"
+    if [[ -f "${dir}/${name}" ]]; then
+      echo "ipa: ERROR: permission '${name}' already exists" >&2
+      exit 1
+    fi
+    touch "${dir}/${name}"
+    echo "  Added permission \"${name}\""
+    exit 0
+    ;;
+
+  permission-del)
+    name="$1"
+    file="${STATE}/permissions/${name}"
+    if [[ -f "$file" ]]; then
+      rm -f "$file"
+      echo "  Deleted permission \"${name}\""
+      exit 0
+    fi
+    echo "ipa: ERROR: ${name}: permission not found" >&2
+    exit 2
+    ;;
+
+  # -------------------------------------------------------------------------
+  # Privilege operations
+  # -------------------------------------------------------------------------
+  privilege-add)
+    name="$1"
+    dir="${STATE}/privileges"
+    mkdir -p "$dir"
+    if [[ -f "${dir}/${name}" ]]; then
+      echo "ipa: ERROR: privilege '${name}' already exists" >&2
+      exit 1
+    fi
+    touch "${dir}/${name}"
+    echo "  Added privilege \"${name}\""
+    exit 0
+    ;;
+
+  privilege-add-permission)
+    priv="$1"; shift
+    perm=""
+    for arg in "$@"; do
+      case "$arg" in
+        --permissions=*) perm="${arg#--permissions=}" ;;
+      esac
+    done
+    dir="${STATE}/privilege_perms/${priv}"
+    mkdir -p "$dir"
+    if [[ -f "${dir}/${perm}" ]]; then
+      echo "  Number of permissions added 0"
+      echo "  '${perm}' is already a member"
+      exit 0
+    fi
+    touch "${dir}/${perm}"
+    echo "  Number of permissions added 1"
+    exit 0
+    ;;
+
+  privilege-remove-permission)
+    priv="$1"; shift
+    perm=""
+    for arg in "$@"; do
+      case "$arg" in
+        --permissions=*) perm="${arg#--permissions=}" ;;
+      esac
+    done
+    file="${STATE}/privilege_perms/${priv}/${perm}"
+    if [[ -f "$file" ]]; then
+      rm -f "$file"
+      echo "  Number of permissions removed 1"
+      exit 0
+    fi
+    echo "ipa: ERROR: '${perm}' is not a member" >&2
+    exit 1
+    ;;
+
+  # -------------------------------------------------------------------------
+  # Role operations
+  # -------------------------------------------------------------------------
+  role-show)
+    name="$1"
+    if [[ -f "${STATE}/roles/${name}" ]]; then
+      echo "  Role name: ${name}"
+      exit 0
+    fi
+    echo "ipa: ERROR: ${name}: role not found" >&2
+    exit 2
+    ;;
+
+  role-add)
+    name="$1"
+    dir="${STATE}/roles"
+    mkdir -p "$dir"
+    if [[ -f "${dir}/${name}" ]]; then
+      echo "ipa: ERROR: role '${name}' already exists" >&2
+      exit 1
+    fi
+    touch "${dir}/${name}"
+    echo "  Added role \"${name}\""
+    exit 0
+    ;;
+
+  role-add-privilege)
+    role="$1"; shift
+    priv=""
+    for arg in "$@"; do
+      case "$arg" in
+        --privileges=*) priv="${arg#--privileges=}" ;;
+      esac
+    done
+    dir="${STATE}/role_privs/${role}"
+    mkdir -p "$dir"
+    if [[ -f "${dir}/${priv}" ]]; then
+      echo "  Number of privileges added 0"
+      echo "  '${priv}' is already a member"
+      exit 0
+    fi
+    touch "${dir}/${priv}"
+    echo "  Number of privileges added 1"
+    exit 0
+    ;;
+
+  role-add-member)
+    role="$1"; shift
+    user=""
+    for arg in "$@"; do
+      case "$arg" in
+        --users=*) user="${arg#--users=}" ;;
+      esac
+    done
+    dir="${STATE}/role_members/${role}"
+    mkdir -p "$dir"
+    if [[ -f "${dir}/${user}" ]]; then
+      echo "  Number of members added 0"
+      echo "  '${user}' is already a member"
+      exit 0
+    fi
+    touch "${dir}/${user}"
+    echo "  Number of members added 1"
+    exit 0
+    ;;
+
+  *)
+    echo "ipa: ERROR: unknown command '${cmd}'" >&2
+    exit 1
+    ;;
+esac

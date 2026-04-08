@@ -1,0 +1,8 @@
+---
+freeipa_domain: "example.com"
+freeipa_vip_state: "absent"
+freeipa_vip_records:
+  - dns_names:
+      - haproxy-vip.example.com
+      - api-vip.example.com
+    ip: "10.128.1.100"

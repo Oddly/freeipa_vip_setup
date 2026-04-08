@@ -1,0 +1,16 @@
+---
+freeipa_domain: "example.com"
+freeipa_vip_state: "present"
+freeipa_vip_records:
+  - dns_names:
+      - haproxy-vip.example.com
+    ip: "10.128.1.100"
+  - dns_names:
+      - db-vip.example.com
+    ip: "10.128.1.200"
+    include_ip_in_cert: true
+    reverse_dns_name: db-vip.example.com
+  - dns_names:
+      - cache-vip.example.com
+      - redis-vip.example.com
+    ip: "10.128.2.50"
